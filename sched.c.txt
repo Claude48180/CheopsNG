@@ -1,0 +1,178 @@
+/*
+ * Cheops Next Generation GUI
+ * 
+ * sched.c
+ * Scheduler Routines
+ *
+ * Copyright(C) 1999 Brent Priddy <toopriddy@mailcity.com>
+ * 
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *                                                                  
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111 USA
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <pthread.h>  // Ensure pthread is used for thread safety
+#include "sched.h"
+#include "logger.h"
+
+/* Determine if a is sooner than b */
+#define SOONER(a,b) (((b).tv_sec > (a).tv_sec) || \
+                     (((b).tv_sec == (a).tv_sec) && ((b).tv_usec > (a).tv_usec)))
+
+#ifdef DEBUG_SCHEDULER
+    #define DEBUG(a) a
+#else
+    #define DEBUG(a)
+#endif
+
+/* if we are using pthread muticies make one here for the sched stuff */
+pthread_mutex_t sched_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Number of events processed */
+static int eventcnt = 1;
+
+/* Number of outstanding schedule events */
+static int schedcnt = 0;
+
+/* Schedule entry and main queue */
+static struct sched {
+    struct sched *next;            /* Next event in the list */
+    int id;                        /* ID number of event */
+    struct timeval when;           /* Absolute time event should take place */
+    int resched;                   /* When to reschedule */
+    void *data;                    /* Data */
+    cheops_sched_cb callback;      /* Function to call */
+} *schedq = NULL;
+
+int cheops_sched_add(struct timeval when, int resched, cheops_sched_cb callback, void *data) {
+    struct sched *new_sched, *current, *previous = NULL;
+
+    new_sched = (struct sched *)malloc(sizeof(struct sched));
+    if (!new_sched) {
+        perror("malloc");
+        return -1;
+    }
+
+    new_sched->id = eventcnt++;
+    new_sched->when = when;
+    new_sched->resched = resched;
+    new_sched->callback = callback;
+    new_sched->data = data;
+
+    pthread_mutex_lock(&sched_mutex);
+
+    current = schedq;
+    while (current && SOONER(current->when, when)) {
+        previous = current;
+        current = current->next;
+    }
+
+    if (previous) {
+        previous->next = new_sched;
+    } else {
+        schedq = new_sched;
+    }
+
+    new_sched->next = current;
+
+    schedcnt++;
+    pthread_mutex_unlock(&sched_mutex);
+
+    return new_sched->id;
+}
+
+int cheops_sched_remove(int id) {
+    struct sched *current, *previous = NULL;
+
+    pthread_mutex_lock(&sched_mutex);
+
+    current = schedq;
+    while (current && current->id != id) {
+        previous = current;
+        current = current->next;
+    }
+
+    if (!current) {
+        pthread_mutex_unlock(&sched_mutex);
+        return -1;
+    }
+
+    if (previous) {
+        previous->next = current->next;
+    } else {
+        schedq = current->next;
+    }
+
+    free(current);
+    schedcnt--;
+    pthread_mutex_unlock(&sched_mutex);
+
+    return 0;
+}
+
+int cheops_sched_wait() {
+    struct timeval now, *next_event;
+    static struct timeval timeout;
+
+    if (schedcnt == 0) {
+        return -1; // No scheduled events
+    }
+
+    pthread_mutex_lock(&sched_mutex);
+    next_event = &schedq->when;
+    pthread_mutex_unlock(&sched_mutex);
+
+    gettimeofday(&now, NULL);
+    if (SOONER(*next_event, now)) {
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 0;
+    } else {
+        timersub(next_event, &now, &timeout);
+    }
+
+    return timeout.tv_sec * 1000 + timeout.tv_usec / 1000; // Return timeout in milliseconds
+}
+
+void cheops_sched_runq() {
+    struct sched *current;
+    struct timeval now;
+
+    gettimeofday(&now, NULL);
+
+    pthread_mutex_lock(&sched_mutex);
+
+    while (schedq && !SOONER(schedq->when, now)) {
+        current = schedq;
+        schedq = current->next;
+
+        pthread_mutex_unlock(&sched_mutex);
+        current->callback(current->data);
+        pthread_mutex_lock(&sched_mutex);
+
+        if (current->resched > 0) {
+            struct timeval next_time;
+            next_time.tv_sec = now.tv_sec + current->resched;
+            next_time.tv_usec = now.tv_usec;
+            cheops_sched_add(next_time, current->resched, current->callback, current->data);
+        }
+
+        free(current);
+        schedcnt--;
+    }
+
+    pthread_mutex_unlock(&sched_mutex);
+}

@@ -1,0 +1,128 @@
+/*
+ * Cheops Next Generation GUI
+ * 
+ * cheops-agent.c
+ * Cheops Agent Main File
+ *
+ * Copyright(C) 1999 Brent Priddy <toopriddy@mailcity.com>
+ * 
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *                                                                  
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111 USA
+ */
+
+#include "config.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <pthread.h>  // Added for thread safety
+#include "cheops.h"
+#include "logger.h"
+#include "event.h"
+#include "agent-discover.h"
+#include "agent-settings.h"
+#include "agent-osscan.h"
+#include "agent-map.h"
+#include "agent-auth.h"
+#include "agent-probe.h"
+#include "probe.h"
+
+#ifdef DEBUG_CHEOPS_AGENT
+    #define DEBUG(a) a
+#else
+    #define DEBUG(a)
+#endif
+
+void init_osscan(void);
+
+typedef struct handler_t {
+    int id;
+    cheops_event_handler cb;
+    char *desc;
+} handler;
+
+/* Buffer for creating all events */
+char ebuf[MAX_EVENT_SIZE];
+event_hdr *eh = (event_hdr *)ebuf;
+event *ee = (event *)(ebuf + sizeof(event_hdr));
+int dopasswords = FALSE;
+
+#if defined(HAS_SSL) && defined(USING_SSL)
+    int dossl = FALSE;
+#endif
+
+static int handle_error(event_hdr *h, event *e, agent *a) {
+    DEBUG(clog(LOG_ERROR,"\nClient reports: Error[%d] - %s", ntohs(e->error_r.error), ((char *)e) + sizeof(error_r)));
+    return 0;
+}
+
+static handler agent_handlers[] = {
+    { REPLY_ERROR, handle_error, "Error Handler" },
+    // Add other handlers here
+};
+
+void agent_init() {
+    // Initialize the agent
+    init_osscan();
+    // Add other initializations here
+}
+
+void agent_cleanup() {
+    // Clean up the agent
+}
+
+void *agent_thread(void *arg) {
+    // Agent thread main function
+    int listen_fd = *((int *)arg);
+    int conn_fd;
+
+    while ((conn_fd = event_accept(listen_fd)) != -1) {
+        // Handle the connection
+        // Use epoll to manage the connection
+    }
+
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    int listen_fd;
+    pthread_t agent_tid;
+
+    // Initialize the agent
+    agent_init();
+
+    // Create a listening socket
+    listen_fd = event_listen(AGENT_PORT);
+    if (listen_fd < 0) {
+        fprintf(stderr, "Failed to create listening socket\n");
+        return EXIT_FAILURE;
+    }
+
+    // Create the agent thread
+    if (pthread_create(&agent_tid, NULL, agent_thread, &listen_fd) != 0) {
+        perror("pthread_create");
+        close(listen_fd);
+        return EXIT_FAILURE;
+    }
+
+    // Wait for the agent thread to finish
+    pthread_join(agent_tid, NULL);
+
+    // Clean up the agent
+    agent_cleanup();
+
+    return EXIT_SUCCESS;
+}

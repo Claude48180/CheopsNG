@@ -1,0 +1,138 @@
+/*
+ * Cheops Next Generation GUI
+ * 
+ * cheops-gui.c
+ * An agent GUI, for testing and communicating directly with agents
+ *
+ * Copyright(C) 1999 Brent Priddy <toopriddy@mailcity.com>
+ * 
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *                                                                  
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111 USA
+ */
+
+#include "config.h"
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <gnome.h>
+#include "event.h"
+#include "cheops-gui.h"
+#include "gui-viewspace.h"
+#include "gui-settings.h"
+#include "gui-canvas.h"
+#include "gui-help.h"
+#include "gui-utils.h"
+#include "logger.h"
+#include "gui-handlers.h"
+#include "gui-config.h"
+#include "gui-sched.h"
+#include "pixmaps/unknown.xpm"
+
+#include <gtk/gtk.h>
+#include <gdk/gdkx.h>
+
+//#define DEBUG_CHEOPS_GUI
+
+#ifdef DEBUG_CHEOPS_GUI
+    #define DEBUG(a) a
+#else
+    #define DEBUG(a)
+#endif
+
+/* duh... */
+cheops_window *main_window = NULL;
+
+/* should be the current notebook page */
+net_page *current_page = NULL;
+
+/* global preferences */
+gui_preferences preferences;
+
+/* this is for modal gnome_dialogs, so we can kill them if the upper level application is killed */
+GtkWidget *kill_me_too = NULL;
+
+int we_are_still_running = 1;
+
+/* Buffer for creating all events, and event stuff, don't you love event driven programs :) */
+char ebuf[65536];
+event_hdr *eh = (event_hdr *)ebuf;
+event *ee = (event *)(ebuf + sizeof(event_hdr));
+
+/* Function declarations */
+void init_gui(void);
+void cleanup_gui(void);
+void on_quit(GtkWidget *widget, gpointer data);
+void on_about(GtkWidget *widget, gpointer data);
+void on_preferences(GtkWidget *widget, gpointer data);
+
+/* Initialize the GUI */
+void init_gui(void) {
+    gnome_init("cheops-ng", VERSION, NULL, 0, NULL);
+
+    /* Create the main window */
+    main_window = gnome_app_new("cheops-ng", "Cheops-NG");
+
+    /* Set up signal handlers */
+    g_signal_connect(G_OBJECT(main_window), "delete_event", G_CALLBACK(on_quit), NULL);
+    g_signal_connect(G_OBJECT(main_window), "destroy", G_CALLBACK(on_quit), NULL);
+
+    /* Create the menu and toolbar */
+    GtkWidget *menu_bar = gnome_app_create_menus(GTK_APPBAR(main_window), main_menu);
+    GtkWidget *toolbar = gnome_app_create_toolbar(GTK_APPBAR(main_window), main_toolbar);
+
+    gnome_app_set_menus(GNOME_APP(main_window), menu_bar);
+    gnome_app_set_toolbar(GNOME_APP(main_window), toolbar);
+
+    /* Show the main window */
+    gtk_widget_show(main_window);
+}
+
+/* Clean up the GUI */
+void cleanup_gui(void) {
+    gtk_widget_destroy(main_window);
+}
+
+/* Callback function for the "quit" menu item */
+void on_quit(GtkWidget *widget, gpointer data) {
+    we_are_still_running = 0;
+    gtk_main_quit();
+}
+
+/* Callback function for the "about" menu item */
+void on_about(GtkWidget *widget, gpointer data) {
+    GnomeAbout *about = gnome_about_new("Cheops-NG",
+                                        VERSION,
+                                        "GPL",
+                                        "Cheops Network User Interface",
+                                        authors,
+                                        NULL, NULL, NULL);
+    gtk_widget_show(about);
+}
+
+/* Callback function for the "preferences" menu item */
+void on_preferences(GtkWidget *widget, gpointer data) {
+    /* Implement preferences dialog */
+}
+
+int main(int argc, char *argv[]) {
+    init_gui();
+
+    /* Enter the GTK main loop */
+    gtk_main();
+
+    cleanup_gui();
+
+    return 0;
+}

@@ -1,0 +1,158 @@
+/*
+ * Cheops Next Generation GUI
+ * 
+ * event.c
+ * General event management routines
+ *
+ * Copyright(C) 1999 Brent Priddy <toopriddy@mailcity.com>
+ * 
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *                                                                  
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111 USA
+ */
+
+#include "config.h"
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+#include <netinet/in.h>
+#ifdef FREEBSD
+    #include <netinet/in_systm.h>
+#endif
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <errno.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include "logger.h"
+#if defined(HAS_SSL) && defined(USING_SSL)
+    #include <openssl/ssl.h>
+    #include <openssl/err.h>
+    #include <openssl/rand.h>
+#endif
+#ifdef COMPILING_GUI
+    #include <gtk/gtk.h>
+    #include "gui-io.h"
+#else
+    #include "io.h"
+#endif
+#include "misc.h"
+#include "event.h"
+#include "cerror.h"
+#include "ip_utils.h"
+#ifndef FREEBSD
+    #include <shadow.h>
+#endif
+#include <pwd.h>
+
+char *crypt(const char *key, const char *salt);
+
+/* Maximum length of local/unix socket */
+#define MAX_SUN_LEN 108
+
+/* Number of connections to let wait */
+#define AGENT_BACKLOG 10
+
+//#define DEBUG_EVENT
+
+#ifdef DEBUG_EVENT
+    #define DEBUG(a) a
+#else
+    #define DEBUG(a)
+#endif
+
+static int set_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl F_GETFL");
+        return -1;
+    }
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl F_SETFL");
+        return -1;
+    }
+    return 0;
+}
+
+int event_listen(int port) {
+    int sockfd;
+    struct sockaddr_in serv_addr;
+
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("socket");
+        return -1;
+    }
+
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv_addr.sin_port = htons(port);
+
+    if (bind(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("bind");
+        close(sockfd);
+        return -1;
+    }
+
+    if (listen(sockfd, AGENT_BACKLOG) < 0) {
+        perror("listen");
+        close(sockfd);
+        return -1;
+    }
+
+    if (set_nonblocking(sockfd) < 0) {
+        close(sockfd);
+        return -1;
+    }
+
+    return sockfd;
+}
+
+int event_accept(int listen_fd) {
+    int conn_fd;
+    struct sockaddr_in cli_addr;
+    socklen_t clilen = sizeof(cli_addr);
+
+    if ((conn_fd = accept(listen_fd, (struct sockaddr *)&cli_addr, &clilen)) < 0) {
+        if (errno != EWOULDBLOCK && errno != EAGAIN) {
+            perror("accept");
+        }
+        return -1;
+    }
+
+    if (set_nonblocking(conn_fd) < 0) {
+        close(conn_fd);
+        return -1;
+    }
+
+    return conn_fd;
+}
+
+void event_handle(int fd, void (*handler)(int, void *), void *arg) {
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET; // Edge-triggered
+    ev.data.ptr = arg;
+
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev) == -1) {
+        perror("epoll_ctl: EPOLL_CTL_ADD");
+        close(fd);
+    }
+}
